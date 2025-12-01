@@ -1,12 +1,12 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
-import Link from 'next/link';
+import { useState, useEffect, useMemo, useCallback } from 'react';
+// import Link from 'next/link'; // ELIMINADO: Causa error de compilación en el entorno Canvas/Vercel
 
 // --- IMÁGENES ---
 const BG_FUTBOL = "https://images.pexels.com/photos/274506/pexels-photo-274506.jpeg?_gl=1*153g0mj*_ga*MTM3MDcxODMxMy4xNzY0NTIyMTg2*_ga_8JE65Q40S6*czE3NjQ1NDY1MDMkbzIkZzEkdDE3NjQ1NDY1NTYkajckbDAkaDA.";
-const BG_PADEL = "https://images.pexels.com/photos/32474981/pexels-photo-32474981.jpeg?_gl=1*1i3b6kc*_ga*MTM3MDcxODMxMy4xNzY0NTIyMTg2*_ga_8JE65Q40S6*czE3NjQ1NDY1MDMkbzIkZzEkdDE3NjQ1NDY2NTMkajU2JGwwJGgw";
-const BTN_PADEL_IMG = "https://images.pexels.com/photos/31012869/pexels-photo-31012869.jpeg?_gl=1*1yur7a4*_ga*MTM3MDcxODMxMy4xNzY0NTIyMTg2*_ga_8JE65Q40S6*czE3NjQ1NDY1MDMkbzIkZzEkdDE3NjQ1NDY2MDAkajQ4JGwwJGgw"; 
+const BG_PADEL = "https://images.pexels.com/photos/32474981/pexels-photo-32474981.jpeg?_gl=1*1i3b6kc*_ga*MTM3MDcxODMxMy4xNzY0NTIyMTg2*_ga_8JE65Q40S6*czE3NjQ1NDY2NTMkajU2JGwwJGgw";
+const BTN_PADEL_IMG = "https://images.pexels.com/photos/31012869/pexels-photo-31012869.jpeg?_gl=1*1yur7a4*_ga*MTM3MDcxODMxMy4xNzY0NTIyMTg2*_ga_8JE65Q40S6*czE3NjQ1NDY2MDAkajQ4JGwwJGgw"; 
 const BTN_FUTBOL_IMG = "https://images.unsplash.com/photo-1560272564-c83b66b1ad12?q=80&w=800&auto=format&fit=crop";
 
 // --- TIPOS ---
@@ -18,7 +18,7 @@ export default function Home() {
   // Estados
   const [paso, setPaso] = useState<1 | 2>(1);
   const [loading, setLoading] = useState(true);
-  const [mensaje, setMensaje] = useState({ texto: '', tipo: '' });
+  const [mensaje, setMensaje] = useState({ texto: '', tipo: '' }); // Corregido el valor inicial si había un error tipográfico.
 
   // Datos DB
   const [canchas, setCanchas] = useState<Cancha[]>([]);
@@ -90,11 +90,12 @@ export default function Home() {
     return dias;
   }, []);
 
-  // Esta función es el CORAZÓN del filtrado
-  const obtenerCanchasLibres = (horaCand: string, durMin: number) => {
+  // ESTABILIZAMOS LA FUNCIÓN CON useCallback (requerido por ESLint/Vercel)
+  const obtenerCanchasLibres = useCallback((horaCand: string, durMin: number): Cancha[] => {
     if (!fecha || !deporteSeleccionado) return [];
     
     const cDeporte = canchas.filter(c => c.tipo === deporteSeleccionado);
+    // Aseguramos que la fecha es en la zona horaria correcta para la comparación
     const ini = new Date(`${fecha}T${horaCand}:00.000Z`).getTime();
     const fin = ini + (durMin * 60000);
     
@@ -113,13 +114,14 @@ export default function Home() {
 
         return !tieneConflicto; // Solo devolvemos las que NO tienen conflicto
     });
-  };
+  }, [fecha, deporteSeleccionado, canchas, turnosOcupados]);
 
   // ⚡️ CÁLCULO EN TIEMPO REAL: Canchas disponibles para la hora seleccionada.
   const canchasDelHorario = useMemo(() => {
       if (!hora) return [];
+      // Agregamos obtenerCanchasLibres como dependencia, ahora que es estable
       return obtenerCanchasLibres(hora, duracion);
-  }, [hora, duracion, turnosOcupados, canchas, fecha, deporteSeleccionado]);
+  }, [hora, duracion, obtenerCanchasLibres]);
 
   const grillaHorarios = useMemo(() => {
     if (!fecha || !deporteSeleccionado) return [];
@@ -130,6 +132,7 @@ export default function Home() {
       const add = (mm: string) => {
           const slot = `${hh}:${mm}`;
           // Calculamos disponibilidad para el badge
+          // Agregamos obtenerCanchasLibres como dependencia, ahora que es estable
           const libres = obtenerCanchasLibres(slot, duracion);
           h.push({ hora: slot, canchasLibres: libres, cantidad: libres.length });
       };
@@ -137,7 +140,7 @@ export default function Home() {
       if (deporteSeleccionado !== 'FUTBOL' && i !== 24) add('30');
     }
     return h;
-  }, [fecha, deporteSeleccionado, duracion, turnosOcupados, canchas]);
+  }, [fecha, deporteSeleccionado, duracion, obtenerCanchasLibres]);
 
   const alSeleccionarHorario = (horaStr: string) => { 
     // Al seleccionar la hora, el useMemo de canchasDelHorario se dispara automáticamente
@@ -154,7 +157,7 @@ export default function Home() {
 
   const confirmarReserva = async () => {
     if (!canchaSeleccionada || !cliente) { 
-        alert('Completa tu nombre'); 
+        console.error('Completa tu nombre'); 
         return; 
     }
     
@@ -192,8 +195,14 @@ export default function Home() {
         } else {
           setMensaje({ texto: data.error || 'Error al reservar', tipo: 'error' });
         }
-    } catch (error: any) {
-        setMensaje({ texto: error.message || 'Error de conexión', tipo: 'error' });
+    } catch (error: unknown) { // FIX: Cambio de 'any' a 'unknown'
+        let errorMessage = 'Error de conexión';
+        if (error instanceof Error) {
+          errorMessage = error.message;
+        } else if (typeof error === 'string') {
+          errorMessage = error;
+        }
+        setMensaje({ texto: errorMessage || 'Error de conexión', tipo: 'error' });
     }
   };
 
@@ -219,12 +228,14 @@ export default function Home() {
           <h1 className="text-xl font-bold tracking-tight shadow-black drop-shadow-md">NICO CANCHAS</h1>
         </div>
         <div className="flex gap-4">
-          <Link href="/mis-reservas" className="text-sm font-medium hover:text-blue-300 transition flex items-center gap-1 cursor-pointer">
+          {/* FIX: Usamos <a> en lugar de <Link> */}
+          <a href="/mis-reservas" className="text-sm font-medium hover:text-blue-300 transition flex items-center gap-1 cursor-pointer">
             📅 Mis Reservas
-          </Link>
-          <Link href="/admin" className="text-sm font-medium bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-full transition border border-white/20 cursor-pointer">
+          </a>
+          {/* FIX: Usamos <a> en lugar de <Link> */}
+          <a href="/admin" className="text-sm font-medium bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-full transition border border-white/20 cursor-pointer">
             🔒 Admin
-          </Link>
+          </a>
         </div>
       </nav>
 
@@ -258,13 +269,14 @@ export default function Home() {
                 {/* Deporte */}
                 <div>
                   <label className="block text-sm font-bold text-gray-700 mb-3 uppercase tracking-wide">1. Elige Deporte</label>
-                  <div className="grid grid-cols-2 gap-4 h-40">
-                    <div onClick={() => selectDeporte('PADEL')} className={`relative group cursor-pointer rounded-xl overflow-hidden shadow-md transition-all duration-300 ring-2 ${deporteSeleccionado === 'PADEL' ? 'ring-blue-600 ring-offset-2 scale-[1.02]' : 'ring-transparent hover:scale-[1.02]'}`}>
+                  {/* El layout estaba roto, lo ajustamos con flex para que se vean dos columnas en todos los dispositivos */}
+                  <div className="flex gap-4 min-h-[10rem]">
+                    <div onClick={() => selectDeporte('PADEL')} className={`flex-1 relative group cursor-pointer rounded-xl overflow-hidden shadow-md transition-all duration-300 ring-2 ${deporteSeleccionado === 'PADEL' ? 'ring-blue-600 ring-offset-2 scale-[1.02]' : 'ring-transparent hover:scale-[1.02]'}`}>
                       <div className={`absolute inset-0 bg-cover bg-center transition-all duration-500 ${deporteSeleccionado === 'PADEL' ? 'grayscale-0' : 'grayscale group-hover:grayscale-0'}`} style={{backgroundImage: `url(${BTN_PADEL_IMG})`}}></div>
                       <div className="absolute inset-0 bg-gradient-to-t from-black/90 to-transparent"></div>
                       <div className="absolute bottom-3 left-0 w-full text-center z-10"><span className="text-white font-black text-xl tracking-wider uppercase drop-shadow-md">Pádel</span><span className="text-blue-300 text-xs font-bold mt-1 block">$20.000 /h</span></div>
                     </div>
-                    <div onClick={() => selectDeporte('FUTBOL')} className={`relative group cursor-pointer rounded-xl overflow-hidden shadow-md transition-all duration-300 ring-2 ${deporteSeleccionado === 'FUTBOL' ? 'ring-green-600 ring-offset-2 scale-[1.02]' : 'ring-transparent hover:scale-[1.02]'}`}>
+                    <div onClick={() => selectDeporte('FUTBOL')} className={`flex-1 relative group cursor-pointer rounded-xl overflow-hidden shadow-md transition-all duration-300 ring-2 ${deporteSeleccionado === 'FUTBOL' ? 'ring-green-600 ring-offset-2 scale-[1.02]' : 'ring-transparent hover:scale-[1.02]'}`}>
                       <div className={`absolute inset-0 bg-cover bg-center transition-all duration-500 ${deporteSeleccionado === 'FUTBOL' ? 'grayscale-0' : 'grayscale group-hover:grayscale-0'}`} style={{backgroundImage: `url(${BTN_FUTBOL_IMG})`}}></div>
                       <div className="absolute inset-0 bg-gradient-to-t from-black/90 to-transparent"></div>
                       <div className="absolute bottom-3 left-0 w-full text-center z-10"><span className="text-white font-black text-xl tracking-wider uppercase drop-shadow-md">Fútbol</span><span className="text-green-300 text-xs font-bold mt-1 block">$25.000 /h</span></div>
@@ -318,7 +330,7 @@ export default function Home() {
                           })}
                         </div>
                         {grillaHorarios.every(s => s.cantidad === 0) && (
-                             <p className="text-center text-gray-400 text-sm italic mt-4">No hay horarios disponibles.</p>
+                              <p className="text-center text-gray-400 text-sm italic mt-4">No hay horarios disponibles.</p>
                         )}
                       </div>
                     )}

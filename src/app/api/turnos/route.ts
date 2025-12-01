@@ -54,8 +54,11 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ success: true, turno: nuevoTurno });
 
-  } catch (error: any) {
-    console.error("Error backend:", error);
-    return NextResponse.json({ error: `Error interno: ${error.message}` }, { status: 500 });
-  }
+  } catch (error: unknown) {
+    let errorMessage = 'Error interno del servidor';
+    if (error instanceof Error) {
+        errorMessage = error.message;
+    } 
+    return new Response(JSON.stringify({ error: errorMessage }), { status: 500 });
+}
 }

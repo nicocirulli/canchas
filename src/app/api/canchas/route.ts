@@ -10,7 +10,8 @@ export async function GET() {
       orderBy: { id: 'asc' }
     });
 
-    // Traducir el ID numérico (1, 2) del deporte a texto (PADEL, FUTBOL)
+    // Traducir el ID numérico (1, 2) del deporte a texto (PADEL, FUTBOL).
+    // Nota: Es mejor usar ENUMs en el esquema de Prisma para evitar lógica manual.
     const canchas = canchasRaw.map((cancha) => {
       // Asume: 1=PADEL, 2=FUTBOL (Según tu esquema)
       const tipoTexto = cancha.tipo === 2 ? 'FUTBOL' : 'PADEL';
@@ -18,18 +19,18 @@ export async function GET() {
       return {
         id: cancha.id,
         nombre: cancha.nombre,
-        tipo: tipoTexto, 
+        tipo: tipoTexto as 'FUTBOL' | 'PADEL', 
       };
     });
 
     return NextResponse.json(canchas);
 
-  } catch (error: any) {
-    // Si falla, devuelve un error genérico (sin romper la app)
-    console.error('CRITICAL API ERROR (canchas):', error);
-    return NextResponse.json(
-      { error: `Error al conectar con la base de datos para cargar canchas.` }, 
-      { status: 500 }
-    );
+  } catch (error: unknown) { // ¡Error de sintaxis corregido aquí!
+    let errorMessage = 'Error interno del servidor al obtener canchas.';
+    if (error instanceof Error) {
+      errorMessage = error.message;
+    } 
+    // Devolvemos una respuesta de error 500
+    return new Response(JSON.stringify({ error: errorMessage }), { status: 500 });
   }
 }

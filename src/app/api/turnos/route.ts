@@ -1,33 +1,61 @@
-import { NextResponse } from "next/server";
-import { PrismaClient } from "@prisma/client";
+import { NextResponse } from 'next/server';
+import { PrismaClient } from '@prisma/client';
 
-export const runtime = "nodejs";
 const prisma = new PrismaClient();
 
-// GET /api/turnos  → trae ordenado por fecha asc (próximos primero)
-export async function GET() {
-  const turnos = await prisma.turno.findMany({
-    orderBy: { fecha: "asc" },
-  });
-  return NextResponse.json(turnos);
-}
+export async function POST(request: Request) {
+  try {
+    const body = await request.json();
+    const { canchaId, fecha, hora, duracion, cliente, email, telefono } = body;
 
-// POST /api/turnos  → crea un turno (valida mínimamente en backend)
-export async function POST(req: Request) {
-  const body = await req.json();
-  const nombre = String(body?.nombre ?? "").trim();
-  const fechaStr = String(body?.fecha ?? "");
-  const fecha = new Date(fechaStr);
+    // 1. Validamos que lleguen todos los datos
+    if (!canchaId || !fecha || !hora || !cliente || !email || !telefono) {
+        return NextResponse.json({ error: 'Faltan datos obligatorios (Email, Teléfono, etc)' }, { status: 400 });
+    }
 
-  if (!nombre) {
-    return NextResponse.json({ ok: false, error: "Nombre requerido" }, { status: 400 });
+    const fechaISO = `${fecha}T${hora}:00.000Z`; 
+    const horaInicio = new Date(fechaISO);
+    const horaFin = new Date(horaInicio.getTime() + duracion * 60000);
+
+    // 2. Validación 7 días
+    const hoy = new Date();
+    const limite = new Date();
+    limite.setDate(hoy.getDate() + 7);
+    if (horaInicio.getTime() > limite.getTime()) {
+      return NextResponse.json({ error: 'Máximo 7 días de anticipación.' }, { status: 400 });
+    }
+
+    // 3. Validación Superposición
+    const ocupado = await prisma.turno.findFirst({
+      where: {
+        canchaId: Number(canchaId),
+        OR: [
+          { horaInicio: { lt: horaFin }, horaFin: { gt: horaInicio } },
+        ],
+      },
+    });
+
+    if (ocupado) {
+      return NextResponse.json({ error: 'La cancha ya está reservada en ese horario.' }, { status: 409 });
+    }
+
+    // 4. Crear Reserva
+    const nuevoTurno = await prisma.turno.create({
+      data: {
+        canchaId: Number(canchaId),
+        nombreCliente: cliente,
+        email: email,       // Guardamos email
+        telefono: telefono, // Guardamos teléfono
+        horaInicio: horaInicio,
+        horaFin: horaFin,
+        duracionMinutos: Number(duracion),
+      },
+    });
+
+    return NextResponse.json({ success: true, turno: nuevoTurno });
+
+  } catch (error: any) {
+    console.error("Error backend:", error);
+    return NextResponse.json({ error: `Error interno: ${error.message}` }, { status: 500 });
   }
-  if (Number.isNaN(fecha.getTime())) {
-    return NextResponse.json({ ok: false, error: "Fecha inválida" }, { status: 400 });
-  }
-
-  const nuevo = await prisma.turno.create({
-    data: { nombre, fecha },
-  });
-  return NextResponse.json(nuevo);
 }

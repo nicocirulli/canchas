@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
+import { Prisma } from "@prisma/client"; // Necesario para tipar el error de Prisma
 
 export const runtime = "nodejs";
 const prisma = new PrismaClient();
-
-// Se elimina la interfaz RouteContext ya que Next.js la rechaza para este uso.
 
 /**
  * Maneja la solicitud DELETE para eliminar un turno por su ID.
@@ -12,7 +11,7 @@ const prisma = new PrismaClient();
  */
 export async function DELETE(
   _req: Request,
-  { params }: { params: { id: string } } // FIX: Usamos desestructuración en línea (patrón estándar de Next.js)
+  { params }: { params: { id: string } } // FIX: Firma de función definitiva
 ) {
   // Accedemos al ID a través de la desestructuración
   const idParam = params.id; 
@@ -31,11 +30,13 @@ export async function DELETE(
     return NextResponse.json({ ok: true, message: `Turno ID ${id} eliminado correctamente.` });
 
   } catch (error: unknown) {
-    // Manejo de errores de Prisma
+    // Manejo de errores de Prisma (Tipamos el error de forma segura con la importación de Prisma)
     let errorMessage = 'Error interno del servidor al intentar eliminar el turno.';
 
+    const prismaError = error as Prisma.PrismaClientKnownRequestError; // Tipamos para verificar el código de error
+    
     // P2025: Error específico de Prisma cuando el registro a eliminar no existe
-    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2025') {
+    if (prismaError.code === 'P2025') {
       errorMessage = `El turno con ID ${id} no fue encontrado.`;
       return NextResponse.json({ ok: false, error: errorMessage }, { status: 404 });
     }

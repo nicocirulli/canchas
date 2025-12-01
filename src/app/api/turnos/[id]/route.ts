@@ -4,15 +4,23 @@ import { PrismaClient } from "@prisma/client";
 export const runtime = "nodejs";
 const prisma = new PrismaClient();
 
+// Definición de la interfaz del contexto para ser explícitos
+interface RouteContext {
+    params: {
+        id: string;
+    };
+}
+
 /**
  * Maneja la solicitud DELETE para eliminar un turno por su ID.
  * La ruta es dinámica: /api/turnos/[id]
  */
 export async function DELETE(
   _req: Request,
-  { params }: { params: { id: string } }
+  context: RouteContext // FIX: Usamos el objeto 'context' tipado en lugar de la destructuración directa
 ) {
-  const idParam = params.id;
+  // Accedemos al ID a través del objeto context
+  const idParam = context.params.id;
   
   const id = Number(idParam);
   

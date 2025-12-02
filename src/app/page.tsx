@@ -229,13 +229,11 @@ export default function Home() {
         </div>
         <div className="flex gap-4">
           {/* FIX: Usamos <a> en lugar de <Link> */}
-          <a href="/mis-reservas" className="text-sm font-medium hover:text-blue-300 transition flex items-center gap-1 cursor-pointer">
+          <a href="/user" className="text-sm font-medium hover:text-blue-300 transition flex items-center gap-1 cursor-pointer">
             📅 Mis Reservas
           </a>
           {/* FIX: Usamos <a> en lugar de <Link> */}
-          <a href="/admin" className="text-sm font-medium bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-full transition border border-white/20 cursor-pointer">
-            🔒 Admin
-          </a>
+          
         </div>
       </nav>
 

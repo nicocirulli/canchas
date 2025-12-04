@@ -11,33 +11,35 @@ interface Cancha {
 interface TurnoAdmin {
   id: number;
   nombreCliente: string;
-  horaInicio: string;
+  // horaInicio debe ser un string de fecha/hora válido (ej: ISO 8601 sin zona horaria, se asume hora local GMT-3)
+  horaInicio: string; 
   horaFin: string;
   duracionMinutos: number;
   cancha: Cancha;
 }
 
-type Filtro = 'HOY' | 'FUTURO' | 'TODOS';
+// Se agrega 'PASADOS' al tipo de filtro
+type Filtro = 'HOY' | 'FUTURO' | 'TODOS' | 'PASADOS'; 
 
 // --- COMPONENTES AUXILIARES DE UI ---
 
 // Reemplazo de alert() y confirm() con un Modal de Diálogo
-const DialogModal = ({ message, onConfirm, onCancel, show }: {
+const DialogModal = ({ message, onConfirm, onCancel, show, isConfirm }: {
   message: string;
   onConfirm?: () => void;
-  onCancel?: () => void;
+  onCancel: () => void;
   show: boolean;
+  isConfirm: boolean; // Indica si es un diálogo de confirmación o solo de información
 }) => {
   if (!show) return null;
-
-  const isConfirmation = !!onConfirm && !!onCancel;
 
   return (
     <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
       <div className="bg-white rounded-xl shadow-2xl p-6 max-w-sm w-full space-y-4">
         <p className="text-slate-800 font-medium text-center">{message}</p>
         <div className="flex justify-center gap-3">
-          {isConfirmation ? (
+          {isConfirm ? (
+            // Diálogo de Confirmación (Pre-cancelación)
             <>
               <button 
                 onClick={onCancel} 
@@ -53,6 +55,7 @@ const DialogModal = ({ message, onConfirm, onCancel, show }: {
               </button>
             </>
           ) : (
+            // Diálogo de Información/Éxito (Post-cancelación o errores)
             <button 
               onClick={onCancel} // Usamos onCancel para cerrar el diálogo simple
               className="py-2 px-6 text-sm font-bold bg-slate-900 text-white rounded-lg hover:bg-slate-800 transition"
@@ -74,6 +77,7 @@ export default function AdminPage() {
   
   const [turnos, setTurnos] = useState<TurnoAdmin[]>([]);
   const [loading, setLoading] = useState(false);
+  // Inicializamos el filtro a 'HOY'
   const [filtro, setFiltro] = useState<Filtro>('HOY');
 
   // Estado del Modal (para reemplazar alert/confirm)
@@ -122,7 +126,7 @@ export default function AdminPage() {
           setTurnos(data);
         }
       })
-      .catch((error: unknown) => { // 👈 CORRECCIÓN: any a unknown
+      .catch((error: unknown) => { 
         let errorMessage = 'Error al cargar los turnos.';
         if (error instanceof Error) {
           errorMessage = error.message;
@@ -134,6 +138,7 @@ export default function AdminPage() {
 
   // --- BORRAR TURNO ---
   const handleEliminarClick = (id: number) => {
+    // Bug 1 Solución 1: Mostramos la confirmación ANTES de la acción
     setModal({
       show: true,
       message: '¿Estás seguro de cancelar esta reserva? Esta acción no se puede deshacer.',
@@ -145,20 +150,27 @@ export default function AdminPage() {
   const confirmarEliminacion = async () => {
     if (!modal.actionId) return;
 
-    setModal({ show: false, message: '', isConfirm: false });
+    // Ocultamos el modal de confirmación mientras se procesa la solicitud
+    setModal({ show: false, message: '', isConfirm: false }); 
     setLoading(true);
 
     try {
       const res = await fetch(`/api/admin?id=${modal.actionId}`, { method: 'DELETE' });
 
       if (res.ok) {
-        setModal({ show: true, message: 'Reserva cancelada con éxito.', isConfirm: false });
-        cargarDatos();
+        // Bug 1 Solución 2: Mostramos el modal de éxito (sólo informativo)
+        setModal({ 
+          show: true, 
+          message: 'Reserva cancelada con éxito.', 
+          isConfirm: false,
+          actionId: undefined // Limpiamos el ID de acción para mayor claridad.
+        });
+        cargarDatos(); // Recargamos la lista
       } else {
         const data = await res.json();
         throw new Error(data.error || 'Error al eliminar la reserva.');
       }
-    } catch (error: unknown) { // 👈 CORRECCIÓN: any a unknown
+    } catch (error: unknown) { 
       let errorMessage = 'Error de conexión al eliminar.';
       if (error instanceof Error) {
         errorMessage = error.message;
@@ -168,25 +180,81 @@ export default function AdminPage() {
     setLoading(false);
   };
 
-  // --- HELPER FECHAS ---
+  // --- HELPER FECHAS (BUG Huso Horario Solución 2.0) ---
   const formatearFechaHora = (iso: string) => {
-    const fecha = new Date(iso);
-    return fecha.toLocaleString('es-AR', {
+    // Bug 2 Solución 2.0:
+    // Asumimos que el string ISO (ej: '2025-10-20T08:00:00') representa la hora LOCAL deseada (8:00 AM)
+    // El constructor new Date(iso) sin zona horaria lo interpreta como UTC (GMT+0), 
+    // lo que resulta en una visualización de 5:00 AM en zonas GMT-3 (Argentina).
+    
+    const fechaUTC = new Date(iso);
+    
+    // Sumamos 3 horas (180 minutos) en milisegundos para compensar el offset 
+    // y corregir la hora para que se muestre como 8:00 AM.
+    const offsetMilisegundos = 3 * 60 * 60 * 1000; 
+
+    // Creamos la fecha corregida.
+    const fixedTime = fechaUTC.getTime() + offsetMilisegundos;
+    const fechaCorregida = new Date(fixedTime);
+
+    // Formateamos la fecha usando el locale de Argentina sin forzar la timeZone,
+    // ya que el timestamp interno ya fue corregido.
+    return fechaCorregida.toLocaleString('es-AR', {
       day: '2-digit', month: '2-digit', year: 'numeric',
-      hour: '2-digit', minute: '2-digit'
+      hour: '2-digit', minute: '2-digit',
+      hour12: false // Formato 24 horas (ej. 08:00)
     });
   };
 
-  // --- FILTRADO DE DATOS ---
+  // --- FILTRADO DE DATOS (Asegurando el filtro PASADOS) ---
   const turnosFiltrados = turnos.filter(t => {
-    // Convertimos a UTC medianoche para la comparación
-    const fechaTurno = new Date(t.horaInicio).setHours(0,0,0,0);
-    const hoy = new Date().setHours(0,0,0,0);
+    // Usamos new Date() sin argumentos para obtener la hora y fecha actuales del cliente
+    const ahora = new Date().getTime();
+    
+    // Obtenemos la fecha y hora de inicio del turno. Usamos el timestamp sin corregir para el filtro.
+    const horaInicioTurno = new Date(t.horaInicio).getTime(); 
 
-    if (filtro === 'HOY') return fechaTurno === hoy;
-    if (filtro === 'FUTURO') return fechaTurno >= hoy;
-    return true; // TODOS
+    // Para comparar DÍAS (HOY vs FUTURO vs PASADOS), necesitamos eliminar la hora
+    const hoyMedianoche = new Date();
+    hoyMedianoche.setHours(0, 0, 0, 0);
+    const hoyTS = hoyMedianoche.getTime();
+
+    // Fecha del turno a medianoche
+    const fechaTurnoMedianoche = new Date(t.horaInicio);
+    fechaTurnoMedianoche.setHours(0, 0, 0, 0);
+    const turnoTS = fechaTurnoMedianoche.getTime();
+
+    if (filtro === 'HOY') {
+      // El turno debe estar en el día de hoy y la hora debe ser en el futuro o ahora.
+      return turnoTS === hoyTS && horaInicioTurno >= ahora;
+    }
+    
+    if (filtro === 'FUTURO') {
+      // El turno es estrictamente en el futuro (después de este instante)
+      return horaInicioTurno > ahora;
+    }
+    
+    if (filtro === 'PASADOS') {
+      // Bug 3 Solución 2.0: El turno es estrictamente en el pasado (antes de este instante)
+      return horaInicioTurno < ahora;
+    }
+
+    // Bug 3 Solución 2.0: Caso explícito para TODOS
+    if (filtro === 'TODOS') {
+        return true;
+    }
+
+    // Fallback por seguridad
+    return true; 
   });
+
+  // Mensaje para "No hay reservas" según el filtro
+  const mensajeNoReservas = 
+    filtro === 'PASADOS' ? 'No hay reservas anteriores a la fecha actual.' :
+    filtro === 'HOY' ? 'No hay reservas programadas para hoy.' :
+    filtro === 'FUTURO' ? 'No hay reservas futuras programadas.' :
+    'No hay reservas registradas.';
+
 
   // ---------------- RENDER: PANTALLA LOGIN ----------------
   if (!autorizado) {
@@ -196,6 +264,7 @@ export default function AdminPage() {
             show={modal.show && !modal.isConfirm}
             message={modal.message}
             onCancel={() => setModal({ show: false, message: '', isConfirm: false })}
+            isConfirm={false}
         />
         <form onSubmit={handleLogin} className="bg-white p-8 rounded-xl shadow-2xl w-full max-w-sm">
           <h1 className="text-2xl font-bold text-center mb-6 text-slate-800">Acceso Admin</h1>
@@ -222,7 +291,7 @@ export default function AdminPage() {
   return (
     <div className="min-h-screen bg-slate-100 font-sans">
       
-      {/* MODAL GLOBAL */}
+      {/* MODAL GLOBAL (Bug 1: Corregido) */}
       <DialogModal 
         show={modal.show}
         message={modal.message}
@@ -245,20 +314,17 @@ export default function AdminPage() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
           <div className="bg-white p-6 rounded-xl shadow-sm border-l-4 border-blue-500">
             <h3 className="text-gray-500 text-sm font-bold uppercase">Reservas Totales</h3>
-            {/* CORRECCIÓN: Uso de optional chaining para acceso seguro */}
             <p className="text-3xl font-black text-slate-800">{turnos?.length || 0}</p>
           </div>
           <div className="bg-white p-6 rounded-xl shadow-sm border-l-4 border-green-500">
             <h3 className="text-gray-500 text-sm font-bold uppercase">Ingresos Estimados</h3>
             <p className="text-3xl font-black text-slate-800">
-              {/* CORRECCIÓN: Uso de optional chaining para acceso seguro */}
               ${((turnos?.length || 0) * 22500).toLocaleString('es-AR')}
             </p>
           </div>
           <div className="bg-white p-6 rounded-xl shadow-sm border-l-4 border-purple-500">
              <h3 className="text-gray-500 text-sm font-bold uppercase">Próximo Turno</h3>
              <p className="text-xl font-bold text-slate-800 mt-1">
-               {/* CORRECCIÓN: Uso de optional chaining para acceso seguro */}
                {turnos?.[0] ? formatearFechaHora(turnos[0].horaInicio) : 'Sin turnos'}
              </p>
           </div>
@@ -269,8 +335,8 @@ export default function AdminPage() {
           <h2 className="text-lg font-bold text-slate-800">Listado de Reservas</h2>
           
           <div className="flex bg-slate-100 p-1 rounded-lg">
-            {/* CORRECCIÓN: Eliminamos 'as any' y usamos el tipo Filtro */}
-            {(['HOY', 'FUTURO', 'TODOS'] as Filtro[]).map((f) => (
+            {/* Se agrega 'PASADOS' al array de filtros */}
+            {(['PASADOS', 'HOY', 'FUTURO', 'TODOS'] as Filtro[]).map((f) => ( 
               <button
                 key={f}
                 onClick={() => setFiltro(f)}
@@ -300,7 +366,7 @@ export default function AdminPage() {
               {loading ? (
                 <tr><td colSpan={5} className="p-8 text-center text-slate-500 font-medium">Cargando datos...</td></tr>
               ) : turnosFiltrados.length === 0 ? (
-                <tr><td colSpan={5} className="p-8 text-center text-gray-400">No hay reservas para este filtro.</td></tr>
+                <tr><td colSpan={5} className="p-8 text-center text-gray-400">{mensajeNoReservas}</td></tr>
               ) : (
                 turnosFiltrados.map((turno) => (
                   <tr key={turno.id} className="hover:bg-slate-50 transition-colors">

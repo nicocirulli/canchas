@@ -8,11 +8,18 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
-model Cancha {
-  id     Int    @id @default(autoincrement())
-  nombre String @map("name")
-  tipo   Int    @map("sport_id") 
+model User {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique
+  password  String
+  role      Role     @default(USER)
+  createdAt DateTime @default(now())
+}
 
+model Cancha {
+  id     Int     @id @default(autoincrement())
+  nombre String  @map("name")
+  tipo   Int     @map("sport_id")
   turnos Turno[]
 
   @@map("Court")
@@ -20,21 +27,21 @@ model Cancha {
 
 model Turno {
   id              Int      @id @default(autoincrement())
-  nombreCliente   String   
-  
-  // CAMPOS NUEVOS
-  email           String   
-  telefono        String   
-  
+  nombreCliente   String
+  email           String
+  telefono        String
   canchaId        Int
-  cancha          Cancha   @relation(fields: [canchaId], references: [id])
-  
-  horaInicio      DateTime 
-  horaFin         DateTime 
-  
-  duracionMinutos Int 
-
+  horaInicio      DateTime
+  horaFin         DateTime
+  duracionMinutos Int
   creadoEn        DateTime @default(now())
+  cancelado       Boolean? @default(false)
+  cancha          Cancha   @relation(fields: [canchaId], references: [id])
 
-  @@map("Booking") 
+  @@map("Booking")
+}
+
+enum Role {
+  ADMIN
+  USER
 }

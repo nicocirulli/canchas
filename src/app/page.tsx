@@ -228,9 +228,28 @@ export default function Home() {
         </div>
         <div className="flex gap-4">
           {/* FIX: Usamos <a> en lugar de <Link> */}
-          <a href="/user" className="text-sm font-medium hover:text-blue-300 transition flex items-center gap-1 cursor-pointer">
-            📅 Mis Reservas
-          </a>
+          <nav className="absolute top-0 left-0 w-full z-50 flex justify-between items-center p-6 text-white bg-gradient-to-b from-black/60 to-transparent pointer-events-auto">
+  <div className="flex items-center gap-2">
+    <div className="bg-white text-slate-950 font-black px-2 py-1 rounded text-sm tracking-tighter">NC</div>
+  </div>
+
+  <div className="flex gap-4">
+    <a
+      href="/login"
+      className="text-sm font-medium hover:text-blue-300 transition cursor-pointer"
+    >
+      🔑 Login
+    </a>
+
+    <a
+      href="/register"
+      className="text-sm font-medium hover:text-green-300 transition cursor-pointer"
+    >
+      📝 Registrarse
+    </a>
+  </div>
+</nav>
+
           {/* FIX: Usamos <a> en lugar de <Link> */}
           
         </div>

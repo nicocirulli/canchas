@@ -1,63 +1,122 @@
-'use client';
+"use client";
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  BarElement,
+  ArcElement,
+  Tooltip,
+  Legend,
+} from "chart.js";
+import { Line, Bar, Doughnut } from "react-chartjs-2";
+import { DateRange, Range, RangeKeyDict } from "react-date-range";
+import { startOfDay, endOfDay } from "date-fns";
+import "react-date-range/dist/styles.css";
+import "react-date-range/dist/theme/default.css";
 
-// --- TIPOS ---
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  BarElement,
+  ArcElement,
+  Tooltip,
+  Legend
+);
+
+// TYPES
 interface Cancha {
   nombre: string;
-  tipo: 'FUTBOL' | 'PADEL';
+  tipo: "FUTBOL" | "PADEL";
 }
 
 interface TurnoAdmin {
   id: number;
   nombreCliente: string;
-  // horaInicio debe ser un string de fecha/hora válido (ej: ISO 8601 sin zona horaria, se asume hora local GMT-3)
-  horaInicio: string; 
+  horaInicio: string;
   horaFin: string;
   duracionMinutos: number;
   cancha: Cancha;
+  cancelado: boolean;
+  email?: string;
 }
 
-// Se agrega 'PASADOS' al tipo de filtro
-type Filtro = 'HOY' | 'FUTURO' | 'TODOS' | 'PASADOS'; 
+type Filtro = "HOY" | "FUTURO" | "PASADOS" | "TODOS" | "CANCELADOS";
 
-// --- COMPONENTES AUXILIARES DE UI ---
+interface ModalState {
+  show: boolean;
+  message: string;
+  actionId?: number;
+  isConfirm: boolean;
+}
 
-// Reemplazo de alert() y confirm() con un Modal de Diálogo
-const DialogModal = ({ message, onConfirm, onCancel, show, isConfirm }: {
+interface JwtPayload {
+  role?: string;
+  [key: string]: any;
+}
+
+function parseJwt(token: string): JwtPayload | null {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const decoded = atob(base64);
+    const jsonPayload = decodeURIComponent(
+      decoded
+        .split("")
+        .map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
+        .join("")
+    );
+    return JSON.parse(jsonPayload);
+  } catch {
+    return null;
+  }
+}
+
+const DialogModal = ({
+  message,
+  onConfirm,
+  onCancel,
+  show,
+  isConfirm,
+}: {
   message: string;
   onConfirm?: () => void;
   onCancel: () => void;
   show: boolean;
-  isConfirm: boolean; // Indica si es un diálogo de confirmación o solo de información
+  isConfirm: boolean;
 }) => {
   if (!show) return null;
 
   return (
-    <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-      <div className="bg-white rounded-xl shadow-2xl p-6 max-w-sm w-full space-y-4">
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-sm w-full space-y-4">
         <p className="text-slate-800 font-medium text-center">{message}</p>
         <div className="flex justify-center gap-3">
           {isConfirm ? (
-            // Diálogo de Confirmación (Pre-cancelación)
             <>
-              <button 
-                onClick={onCancel} 
+              <button
+                onClick={onCancel}
                 className="flex-1 py-2 text-sm font-bold border border-gray-300 rounded-lg hover:bg-gray-100 transition"
               >
-                No, volver
+                Volver
               </button>
-              <button 
-                onClick={onConfirm} 
+              <button
+                onClick={onConfirm}
                 className="flex-1 py-2 text-sm font-bold bg-red-600 text-white rounded-lg hover:bg-red-700 transition"
               >
-                Sí, Cancelar
+                Cancelar reserva
               </button>
             </>
           ) : (
-            // Diálogo de Información/Éxito (Post-cancelación o errores)
-            <button 
-              onClick={onCancel} // Usamos onCancel para cerrar el diálogo simple
+            <button
+              onClick={onCancel}
               className="py-2 px-6 text-sm font-bold bg-slate-900 text-white rounded-lg hover:bg-slate-800 transition"
             >
               Cerrar
@@ -69,336 +128,594 @@ const DialogModal = ({ message, onConfirm, onCancel, show, isConfirm }: {
   );
 };
 
-
+// MAIN COMPONENT
 export default function AdminPage() {
-  // --- ESTADOS ---
-  const [autorizado, setAutorizado] = useState(false);
-  const [password, setPassword] = useState('');
-  
+  const router = useRouter();
+  const [checkingAuth, setCheckingAuth] = useState(true);
+  const [authorized, setAuthorized] = useState(false);
   const [turnos, setTurnos] = useState<TurnoAdmin[]>([]);
   const [loading, setLoading] = useState(false);
-  // Inicializamos el filtro a 'HOY'
-  const [filtro, setFiltro] = useState<Filtro>('HOY');
+  const [filtro, setFiltro] = useState<Filtro>("HOY");
 
-  // Estado del Modal (para reemplazar alert/confirm)
-  const [modal, setModal] = useState<{
-    show: boolean;
-    message: string;
-    actionId?: number; // Para la confirmación de borrado
-    isConfirm: boolean;
-  }>({
+  const [showStats, setShowStats] = useState(false);
+  const [modal, setModal] = useState<ModalState>({
     show: false,
-    message: '',
+    message: "",
     isConfirm: false,
   });
 
-  // --- EFECTO DE AUTOCARGA (Solo después de login) ---
-  useEffect(() => {
-    if (autorizado) {
-      cargarDatos();
-    }
-  }, [autorizado]);
+  const [range, setRange] = useState<Range>({
+    startDate: startOfDay(new Date(new Date().setDate(new Date().getDate() - 7))),
+    endDate: endOfDay(new Date()),
+    key: "selection",
+  });
 
-
-  // --- LOGIN SIMPLE ---
-  const handleLogin = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (password === 'admin123') { // CLAVE SIMPLE
-      setAutorizado(true);
-      // El useEffect se encargará de cargar los datos
-    } else {
-      setModal({ show: true, message: 'Contraseña incorrecta', isConfirm: false });
-    }
+  const handleRangeChange = (ranges: RangeKeyDict) => {
+    const sel = ranges.selection;
+    setRange({
+      startDate: sel.startDate ? startOfDay(sel.startDate) : undefined,
+      endDate: sel.endDate ? endOfDay(sel.endDate) : undefined,
+      key: "selection",
+    });
   };
 
-  // --- CARGAR DATOS ---
+  const startTs = range.startDate?.getTime() ?? 0;
+  const endTs = range.endDate?.getTime() ?? 9999999999999;
+
+  // AUTH CHECK
+  useEffect(() => {
+    const token =
+      typeof window !== "undefined"
+        ? window.localStorage.getItem("token")
+        : null;
+
+    if (!token) {
+      router.replace("/login");
+      return;
+    }
+
+    const payload = parseJwt(token);
+
+    if (!payload || payload.role !== "ADMIN") {
+      router.replace("/");
+      return;
+    }
+
+    setAuthorized(true);
+    setCheckingAuth(false);
+  }, [router]);
+
+  // LOAD DATA
   const cargarDatos = () => {
     setLoading(true);
-    fetch('/api/admin')
-      .then(res => {
-        if (!res.ok) throw new Error('Error al obtener datos del servidor.');
-        return res.json();
-      })
-      .then(data => {
-        if (Array.isArray(data)) {
-          // Ordenar por fecha para que el resumen sea correcto
-          data.sort((a, b) => new Date(a.horaInicio).getTime() - new Date(b.horaInicio).getTime());
-          setTurnos(data);
-        }
-      })
-      .catch((error: unknown) => { 
-        let errorMessage = 'Error al cargar los turnos.';
-        if (error instanceof Error) {
-          errorMessage = error.message;
-        }
-        setModal({ show: true, message: errorMessage, isConfirm: false });
+    fetch("/api/admin?includeCancelados=true")
+      .then((res) => res.json())
+      .then((data: TurnoAdmin[]) => {
+        data.sort(
+          (a, b) =>
+            new Date(a.horaInicio).getTime() -
+            new Date(b.horaInicio).getTime()
+        );
+        setTurnos(data);
       })
       .finally(() => setLoading(false));
   };
 
-  // --- BORRAR TURNO ---
+  useEffect(() => {
+    if (authorized) cargarDatos();
+  }, [authorized]);
+
   const handleEliminarClick = (id: number) => {
-    // Bug 1 Solución 1: Mostramos la confirmación ANTES de la acción
     setModal({
       show: true,
-      message: '¿Estás seguro de cancelar esta reserva? Esta acción no se puede deshacer.',
+      message: "¿Deseás cancelar esta reserva?",
+      isConfirm: true,
       actionId: id,
-      isConfirm: true
     });
   };
 
   const confirmarEliminacion = async () => {
     if (!modal.actionId) return;
+    setModal({ ...modal, show: false });
 
-    // Ocultamos el modal de confirmación mientras se procesa la solicitud
-    setModal({ show: false, message: '', isConfirm: false }); 
-    setLoading(true);
+    const res = await fetch(`/api/admin?id=${modal.actionId}`, {
+      method: "DELETE",
+    });
 
-    try {
-      const res = await fetch(`/api/admin?id=${modal.actionId}`, { method: 'DELETE' });
+    cargarDatos();
 
-      if (res.ok) {
-        // Bug 1 Solución 2: Mostramos el modal de éxito (sólo informativo)
-        setModal({ 
-          show: true, 
-          message: 'Reserva cancelada con éxito.', 
-          isConfirm: false,
-          actionId: undefined // Limpiamos el ID de acción para mayor claridad.
-        });
-        cargarDatos(); // Recargamos la lista
-      } else {
-        const data = await res.json();
-        throw new Error(data.error || 'Error al eliminar la reserva.');
-      }
-    } catch (error: unknown) { 
-      let errorMessage = 'Error de conexión al eliminar.';
-      if (error instanceof Error) {
-        errorMessage = error.message;
-      }
-      setModal({ show: true, message: errorMessage, isConfirm: false });
-    }
-    setLoading(false);
-  };
-
-  // --- HELPER FECHAS (BUG Huso Horario Solución 2.0) ---
-  const formatearFechaHora = (iso: string) => {
-    // Bug 2 Solución 2.0:
-    // Asumimos que el string ISO (ej: '2025-10-20T08:00:00') representa la hora LOCAL deseada (8:00 AM)
-    // El constructor new Date(iso) sin zona horaria lo interpreta como UTC (GMT+0), 
-    // lo que resulta en una visualización de 5:00 AM en zonas GMT-3 (Argentina).
-    
-    const fechaUTC = new Date(iso);
-    
-    // Sumamos 3 horas (180 minutos) en milisegundos para compensar el offset 
-    // y corregir la hora para que se muestre como 8:00 AM.
-    const offsetMilisegundos = 3 * 60 * 60 * 1000; 
-
-    // Creamos la fecha corregida.
-    const fixedTime = fechaUTC.getTime() + offsetMilisegundos;
-    const fechaCorregida = new Date(fixedTime);
-
-    // Formateamos la fecha usando el locale de Argentina sin forzar la timeZone,
-    // ya que el timestamp interno ya fue corregido.
-    return fechaCorregida.toLocaleString('es-AR', {
-      day: '2-digit', month: '2-digit', year: 'numeric',
-      hour: '2-digit', minute: '2-digit',
-      hour12: false // Formato 24 horas (ej. 08:00)
+    setModal({
+      show: true,
+      message: "Reserva cancelada exitosamente.",
+      isConfirm: false,
     });
   };
 
-  // --- FILTRADO DE DATOS (Asegurando el filtro PASADOS) ---
-  const turnosFiltrados = turnos.filter(t => {
-    // Usamos new Date() sin argumentos para obtener la hora y fecha actuales del cliente
-    const ahora = new Date().getTime();
-    
-    // Obtenemos la fecha y hora de inicio del turno. Usamos el timestamp sin corregir para el filtro.
-    const horaInicioTurno = new Date(t.horaInicio).getTime(); 
+  const formatDateTime = (iso: string) =>
+    new Date(iso).toLocaleString("es-AR", {
+      timeZone: "America/Argentina/Buenos_Aires",
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
 
-    // Para comparar DÍAS (HOY vs FUTURO vs PASADOS), necesitamos eliminar la hora
-    const hoyMedianoche = new Date();
-    hoyMedianoche.setHours(0, 0, 0, 0);
-    const hoyTS = hoyMedianoche.getTime();
+  const ahora = Date.now();
 
-    // Fecha del turno a medianoche
-    const fechaTurnoMedianoche = new Date(t.horaInicio);
-    fechaTurnoMedianoche.setHours(0, 0, 0, 0);
-    const turnoTS = fechaTurnoMedianoche.getTime();
+  const turnosFiltrados = useMemo(() => {
+    return turnos.filter((t) => {
+      const ts = new Date(t.horaInicio).getTime();
 
-    if (filtro === 'HOY') {
-      // El turno debe estar en el día de hoy y la hora debe ser en el futuro o ahora.
-      return turnoTS === hoyTS && horaInicioTurno >= ahora;
-    }
-    
-    if (filtro === 'FUTURO') {
-      // El turno es estrictamente en el futuro (después de este instante)
-      return horaInicioTurno > ahora;
-    }
-    
-    if (filtro === 'PASADOS') {
-      // Bug 3 Solución 2.0: El turno es estrictamente en el pasado (antes de este instante)
-      return horaInicioTurno < ahora;
-    }
+      if (filtro === "CANCELADOS") return t.cancelado;
+      if (t.cancelado) return false;
 
-    // Bug 3 Solución 2.0: Caso explícito para TODOS
-    if (filtro === 'TODOS') {
-        return true;
-    }
+      if (filtro === "HOY") {
+        const hoy = new Date();
+        hoy.setHours(0, 0, 0, 0);
+        const th = new Date(t.horaInicio);
+        th.setHours(0, 0, 0, 0);
+        return th.getTime() === hoy.getTime();
+      }
 
-    // Fallback por seguridad
-    return true; 
+      if (filtro === "FUTURO") return ts > ahora;
+      if (filtro === "PASADOS") return ts < ahora;
+
+      return true;
+    });
+  }, [turnos, filtro, ahora]);
+
+  const precioPorHora = 20000;
+
+  const activos = turnos.filter((t) => !t.cancelado);
+  const cancelados = turnos.filter((t) => t.cancelado);
+
+  const activosEnRango = activos.filter((t) => {
+    const ts = new Date(t.horaInicio).getTime();
+    return ts >= startTs && ts <= endTs;
   });
 
-  // Mensaje para "No hay reservas" según el filtro
-  const mensajeNoReservas = 
-    filtro === 'PASADOS' ? 'No hay reservas anteriores a la fecha actual.' :
-    filtro === 'HOY' ? 'No hay reservas programadas para hoy.' :
-    filtro === 'FUTURO' ? 'No hay reservas futuras programadas.' :
-    'No hay reservas registradas.';
+  const canceladosEnRango = cancelados.filter((t) => {
+    const ts = new Date(t.horaInicio).getTime();
+    return ts >= startTs && ts <= endTs;
+  });
 
+  const ingresosRangoTotal = activosEnRango.reduce(
+    (acc, t) => acc + (t.duracionMinutos / 60) * precioPorHora,
+    0
+  );
 
-  // ---------------- RENDER: PANTALLA LOGIN ----------------
-  if (!autorizado) {
+  const diasRango = Math.max(
+    1,
+    Math.round((endTs - startTs) / (1000 * 60 * 60 * 24))
+  );
+
+  const ingresosPromedioDia = ingresosRangoTotal / diasRango;
+
+  const duracionPromedioRango =
+    activosEnRango.length === 0
+      ? 0
+      : activosEnRango.reduce((a, t) => a + t.duracionMinutos, 0) /
+        activosEnRango.length;
+
+  const reservasPorDia = useMemo(() => {
+    const map = new Map<string, number>();
+    activosEnRango.forEach((t) => {
+      const d = new Date(t.horaInicio).toLocaleDateString("es-AR", {
+        timeZone: "America/Argentina/Buenos_Aires",
+      });
+      map.set(d, (map.get(d) || 0) + 1);
+    });
+    return {
+      labels: [...map.keys()],
+      datasets: [
+        {
+          label: "Reservas",
+          data: [...map.values()],
+          borderColor: "#3b82f6",
+          backgroundColor: "rgba(59,130,246,.2)",
+          tension: 0.3,
+          fill: true,
+        },
+      ],
+    };
+  }, [activosEnRango]);
+  const horariosMasVendidos = useMemo(() => {
+    const map = new Map<string, number>();
+    activosEnRango.forEach((t) => {
+      const h = new Date(t.horaInicio).toLocaleTimeString("es-AR", {
+        hour: "2-digit",
+        minute: "2-digit",
+        timeZone: "America/Argentina/Buenos_Aires",
+      });
+      map.set(h, (map.get(h) || 0) + 1);
+    });
+
+    const labels = [...map.keys()].sort();
+
+    return {
+      labels,
+      datasets: [
+        {
+          label: "Turnos",
+          data: labels.map((h) => map.get(h) || 0),
+          backgroundColor: "rgba(16,185,129,.8)",
+        },
+      ],
+    };
+  }, [activosEnRango]);
+
+  const ingresosDiarios = useMemo(() => {
+    const map = new Map<string, number>();
+    activosEnRango.forEach((t) => {
+      const d = new Date(t.horaInicio).toLocaleDateString("es-AR", {
+        timeZone: "America/Argentina/Buenos_Aires",
+      });
+      const monto = (t.duracionMinutos / 60) * precioPorHora;
+      map.set(d, (map.get(d) || 0) + monto);
+    });
+
+    return {
+      labels: [...map.keys()],
+      datasets: [
+        {
+          label: "Ingresos ($)",
+          data: [...map.values()],
+          borderColor: "#22c55e",
+          backgroundColor: "rgba(34,197,94,.2)",
+          tension: 0.3,
+          fill: true,
+        },
+      ],
+    };
+  }, [activosEnRango]);
+
+  const retencionData = useMemo(() => {
+    const map = new Map<string, number>();
+
+    activosEnRango.forEach((t) => {
+      if (!t.email) return;
+      map.set(t.email, (map.get(t.email) || 0) + 1);
+    });
+
+    let one = 0,
+      twoThree = 0,
+      fourPlus = 0;
+
+    map.forEach((count) => {
+      if (count === 1) one++;
+      else if (count <= 3) twoThree++;
+      else fourPlus++;
+    });
+
+    const total = one + twoThree + fourPlus || 1;
+
+    return {
+      labels: ["1 vez", "2-3 veces", "4+ veces"],
+      datasets: [
+        {
+          data: [
+            Math.round((one / total) * 100),
+            Math.round((twoThree / total) * 100),
+            Math.round((fourPlus / total) * 100),
+          ],
+          backgroundColor: ["#3b82f6", "#a855f7", "#22c55e"],
+          borderWidth: 0,
+        },
+      ],
+    };
+  }, [activosEnRango]);
+
+  const chartOptionsBase = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: {
+        labels: { color: "#e5e7eb" },
+      },
+    },
+    scales: {
+      x: { ticks: { color: "#9ca3af" } },
+      y: { ticks: { color: "#9ca3af" } },
+    },
+  };
+
+  if (checkingAuth) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-900">
-        <DialogModal 
-            show={modal.show && !modal.isConfirm}
-            message={modal.message}
-            onCancel={() => setModal({ show: false, message: '', isConfirm: false })}
-            isConfirm={false}
-        />
-        <form onSubmit={handleLogin} className="bg-white p-8 rounded-xl shadow-2xl w-full max-w-sm">
-          <h1 className="text-2xl font-bold text-center mb-6 text-slate-800">Acceso Admin</h1>
-          <input 
-            type="password" 
-            placeholder="Contraseña" 
-            className="w-full p-3 border rounded-lg mb-4 focus:ring-slate-900 focus:border-slate-900"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            disabled={loading}
-          />
-          <button 
-            className="w-full bg-slate-900 text-white p-3 rounded-lg font-bold hover:bg-slate-800 transition"
-            disabled={loading}
-          >
-            {loading ? 'Cargando...' : 'Ingresar'}
-          </button>
-        </form>
+      <div className="min-h-screen flex items-center justify-center bg-[#0a0f1c] text-white">
+        Verificando acceso...
       </div>
     );
   }
 
-  // ---------------- RENDER: DASHBOARD ----------------
+  if (!authorized) return null;
+
   return (
-    <div className="min-h-screen bg-slate-100 font-sans">
-      
-      {/* MODAL GLOBAL (Bug 1: Corregido) */}
-      <DialogModal 
+    <div className="min-h-screen bg-gradient-to-b from-[#0a0f1c] to-black text-white">
+      <DialogModal
         show={modal.show}
         message={modal.message}
         isConfirm={modal.isConfirm}
         onConfirm={confirmarEliminacion}
-        onCancel={() => setModal({ show: false, message: '', isConfirm: false })}
+        onCancel={() =>
+          setModal({ show: false, message: "", isConfirm: false })
+        }
       />
 
-      {/* NAVBAR */}
-      <nav className="bg-slate-900 text-white p-4 shadow-md flex justify-between items-center">
-        <h1 className="text-xl font-bold">Panel de Control - Nico Canchas</h1>
-        <button onClick={() => setAutorizado(false)} className="text-sm bg-slate-700 px-3 py-1 rounded hover:bg-slate-600 transition">
-          Cerrar Sesión
+      <nav className="px-6 py-4 border-b border-white/10 flex items-center justify-between bg-black/20 backdrop-blur">
+        <h1 className="text-xl sm:text-2xl font-extrabold">
+          Panel de Administración
+        </h1>
+
+        <button
+          onClick={() => {
+            window.localStorage.removeItem("token");
+            router.replace("/login");
+          }}
+          className="text-sm bg-red-600 px-4 py-2 rounded-xl font-bold hover:bg-red-500"
+        >
+          Cerrar sesión
         </button>
       </nav>
 
-      <div className="max-w-6xl mx-auto p-6">
-        
-        {/* RESUMEN SIMPLE */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-          <div className="bg-white p-6 rounded-xl shadow-sm border-l-4 border-blue-500">
-            <h3 className="text-gray-500 text-sm font-bold uppercase">Reservas Totales</h3>
-            <p className="text-3xl font-black text-slate-800">{turnos?.length || 0}</p>
-          </div>
-          <div className="bg-white p-6 rounded-xl shadow-sm border-l-4 border-green-500">
-            <h3 className="text-gray-500 text-sm font-bold uppercase">Ingresos Estimados</h3>
-            <p className="text-3xl font-black text-slate-800">
-              ${((turnos?.length || 0) * 22500).toLocaleString('es-AR')}
-            </p>
-          </div>
-          <div className="bg-white p-6 rounded-xl shadow-sm border-l-4 border-purple-500">
-             <h3 className="text-gray-500 text-sm font-bold uppercase">Próximo Turno</h3>
-             <p className="text-xl font-bold text-slate-800 mt-1">
-               {turnos?.[0] ? formatearFechaHora(turnos[0].horaInicio) : 'Sin turnos'}
-             </p>
-          </div>
-        </div>
+      <main className="max-w-6xl mx-auto p-6 space-y-8">
+        {/* ESTADÍSTICAS */}
+        <section className="bg-white/5 border border-white/10 rounded-2xl shadow overflow-hidden">
+          <button
+            onClick={() => setShowStats((s) => !s)}
+            className="w-full flex justify-between items-center px-4 py-3 bg-white/10 hover:bg-white/20 transition text-left"
+          >
+            <div>
+              <h2 className="font-semibold text-lg">📊 Estadísticas del sistema</h2>
+              <p className="text-xs opacity-70 mt-1">
+                Rango actual:{" "}
+                {range.startDate?.toLocaleDateString("es-AR")} -{" "}
+                {range.endDate?.toLocaleDateString("es-AR")}
+              </p>
+            </div>
+            <span className="font-bold text-sm opacity-80">
+              {showStats ? "Ocultar ▲" : "Mostrar ▼"}
+            </span>
+          </button>
 
-        {/* CONTROLES Y FILTROS */}
-        <div className="bg-white rounded-t-xl p-4 border-b flex flex-col md:flex-row justify-between items-center gap-4">
-          <h2 className="text-lg font-bold text-slate-800">Listado de Reservas</h2>
-          
-          <div className="flex bg-slate-100 p-1 rounded-lg">
-            {/* Se agrega 'PASADOS' al array de filtros */}
-            {(['PASADOS', 'HOY', 'FUTURO', 'TODOS'] as Filtro[]).map((f) => ( 
-              <button
-                key={f}
-                onClick={() => setFiltro(f)}
-                className={`px-4 py-1.5 rounded-md text-sm font-bold transition-all ${
-                  filtro === f ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-                }`}
-              >
-                {f}
-              </button>
-            ))}
-          </div>
-        </div>
+          {/* CAJA PLEGABLE */}
+          <div
+            className={`transition-all duration-500 overflow-hidden ${
+              showStats ? "max-h-[2400px] opacity-100" : "max-h-0 opacity-0"
+            }`}
+          >
+            <div className="p-4 space-y-8">
+              {/* SELECTOR DE FECHA */}
+              <div className="bg-black/20 rounded-2xl border border-white/10 p-3 flex flex-col md:flex-row gap-4">
+                <div>
+                  <p className="text-sm font-semibold mb-2">
+                    Seleccionar rango de fechas
+                  </p>
+                  <DateRange
+                    ranges={[range]}
+                    onChange={handleRangeChange}
+                    editableDateInputs
+                    moveRangeOnFirstSelection={false}
+                    rangeColors={["#3b82f6"]}
+                    direction="horizontal"
+                    months={1}
+                  />
+                </div>
 
-        {/* TABLA DE DATOS */}
-        <div className="bg-white rounded-b-xl shadow-sm overflow-hidden overflow-x-auto">
-          <table className="w-full text-left text-sm text-slate-600">
-            <thead className="bg-slate-50 text-xs uppercase text-slate-500">
-              <tr>
-                <th className="px-6 py-4 font-bold">Fecha y Hora</th>
-                <th className="px-6 py-4 font-bold">Cliente</th>
-                <th className="px-6 py-4 font-bold">Cancha</th>
-                <th className="px-6 py-4 font-bold">Duración</th>
-                <th className="px-6 py-4 font-bold text-right">Acciones</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {loading ? (
-                <tr><td colSpan={5} className="p-8 text-center text-slate-500 font-medium">Cargando datos...</td></tr>
-              ) : turnosFiltrados.length === 0 ? (
-                <tr><td colSpan={5} className="p-8 text-center text-gray-400">{mensajeNoReservas}</td></tr>
-              ) : (
-                turnosFiltrados.map((turno) => (
-                  <tr key={turno.id} className="hover:bg-slate-50 transition-colors">
-                    <td className="px-6 py-4 font-medium text-slate-900">
-                      {formatearFechaHora(turno.horaInicio)}
-                    </td>
-                    <td className="px-6 py-4">{turno.nombreCliente}</td>
-                    <td className="px-6 py-4">
-                      <span className={`px-2 py-1 rounded text-xs font-bold ${
-                        turno.cancha.tipo === 'FUTBOL' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'
-                      }`}>
-                        {turno.cancha.nombre}
+                {/* METRICAS */}
+                <div className="flex-1 grid gap-3 md:grid-cols-2 xl:grid-cols-2 items-start">
+                  <div className="bg-white/5 border border-white/10 rounded-2xl p-4 shadow">
+                    <p className="text-sm text-gray-300">Reservas activas</p>
+                    <p className="text-3xl font-extrabold mt-2">
+                      {activosEnRango.length}
+                    </p>
+                    <p className="text-xs opacity-70 mt-1">
+                      Canceladas:{" "}
+                      <span className="font-semibold text-red-300">
+                        {canceladosEnRango.length}
                       </span>
-                    </td>
-                    <td className="px-6 py-4">{turno.duracionMinutos} min</td>
-                    <td className="px-6 py-4 text-right">
-                      <button 
-                        onClick={() => handleEliminarClick(turno.id)}
-                        className="text-red-500 hover:text-red-700 font-bold hover:bg-red-50 px-3 py-1 rounded transition-colors disabled:opacity-50"
-                        disabled={loading}
-                      >
-                        Cancelar
-                      </button>
+                    </p>
+                  </div>
+
+                  <div className="bg-white/5 border border-white/10 rounded-2xl p-4 shadow">
+                    <p className="text-sm text-gray-300">Ingresos totales</p>
+                    <p className="text-3xl font-extrabold mt-2 text-green-300">
+                      ${ingresosRangoTotal.toLocaleString("es-AR")}
+                    </p>
+                    <p className="text-xs opacity-70 mt-1">
+                      Promedio diario:{" "}
+                      <span className="font-semibold text-blue-300">
+                        ${ingresosPromedioDia.toFixed(0).toLocaleString("es-AR")}
+                      </span>
+                    </p>
+                  </div>
+                  <div className="bg-white/5 border border-white/10 rounded-2xl p-4 shadow">
+                    <p className="text-sm text-gray-300">Duración promedio</p>
+                    <p className="text-3xl font-extrabold mt-2">
+                      {duracionPromedioRango.toFixed(0)} min
+                    </p>
+                  </div>
+
+                  <div className="bg-white/5 border border-white/10 rounded-2xl p-4 shadow">
+                    <p className="text-sm text-gray-300">Días del rango</p>
+                    <p className="text-3xl font-extrabold mt-2">{diasRango}</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* GRAFICOS */}
+              <div className="grid gap-6 lg:grid-cols-2">
+                <div className="bg-white/5 border border-white/10 rounded-2xl p-4 shadow">
+                  <h2 className="font-semibold mb-2">Reservas por día</h2>
+                  <div className="h-64">
+                    <Line data={reservasPorDia} options={chartOptionsBase} />
+                  </div>
+                </div>
+
+                <div className="bg-white/5 border border-white/10 rounded-2xl p-4 shadow">
+                  <h2 className="font-semibold mb-2">Horarios más vendidos</h2>
+                  <div className="h-64">
+                    <Bar data={horariosMasVendidos} options={chartOptionsBase} />
+                  </div>
+                </div>
+
+                <div className="bg-white/5 border border-white/10 rounded-2xl p-4 shadow">
+                  <h2 className="font-semibold mb-2">Ingresos diarios</h2>
+                  <div className="h-64">
+                    <Line data={ingresosDiarios} options={chartOptionsBase} />
+                  </div>
+                </div>
+
+                <div className="bg-white/5 border border-white/10 rounded-2xl p-4 shadow">
+                  <h2 className="font-semibold mb-2">Retención de usuarios</h2>
+                  <div className="flex items-center justify-center h-64">
+                    <Doughnut
+                      data={retencionData}
+                      options={{
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                          legend: {
+                            labels: { color: "#e5e7eb" },
+                            position: "bottom",
+                          },
+                        },
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* TABLA */}
+        <section className="bg-white/5 border border-white/10 rounded-2xl shadow overflow-hidden">
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 px-4 py-3 border-b border-white/10">
+            <h2 className="font-semibold text-lg">Listado de reservas</h2>
+
+            <div className="flex flex-wrap gap-2 bg-white/5 p-1 rounded-xl">
+              {(["HOY", "FUTURO", "PASADOS", "TODOS", "CANCELADOS"] as Filtro[]).map(
+                (f) => (
+                  <button
+                    key={f}
+                    onClick={() => setFiltro(f)}
+                    className={`px-3 py-1.5 text-xs sm:text-sm rounded-lg font-semibold transition ${
+                      filtro === f
+                        ? "bg-white text-slate-900 shadow"
+                        : "text-gray-300 hover:bg-white/10"
+                    }`}
+                  >
+                    {f}
+                  </button>
+                )
+              )}
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-white/10 text-gray-200">
+                <tr>
+                  <th className="px-4 py-3 text-left">Fecha</th>
+                  <th className="px-4 py-3 text-left">Cliente</th>
+                  <th className="px-4 py-3 text-left">Cancha</th>
+                  <th className="px-4 py-3 text-left">Duración</th>
+
+                  {filtro !== "PASADOS" && (
+                    <th className="px-4 py-3 text-left">Estado</th>
+                  )}
+
+                  {filtro !== "PASADOS" && (
+                    <th className="px-4 py-3 text-right">Acciones</th>
+                  )}
+                </tr>
+              </thead>
+
+              <tbody className="divide-y divide-white/5">
+                {loading ? (
+                  <tr>
+                    <td
+                      colSpan={6}
+                      className="px-4 py-6 text-center text-gray-300"
+                    >
+                      Cargando datos...
                     </td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-        
-      </div>
+                ) : turnosFiltrados.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={6}
+                      className="px-4 py-6 text-center text-gray-400"
+                    >
+                      No hay reservas para este filtro.
+                    </td>
+                  </tr>
+                ) : (
+                  turnosFiltrados.map((t) => (
+                    <tr
+                      key={t.id}
+                      className={`${
+                        t.cancelado
+                          ? "opacity-60 bg-red-950/40"
+                          : "hover:bg-white/5"
+                      }`}
+                    >
+                      <td className="px-4 py-3 text-gray-100">
+                        {formatDateTime(t.horaInicio)}
+                      </td>
+                      <td className="px-4 py-3 text-gray-100">
+                        {t.nombreCliente}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={`px-2 py-1 rounded-full text-xs font-bold ${
+                            t.cancha.tipo === "FUTBOL"
+                              ? "bg-emerald-500/20 text-emerald-200"
+                              : "bg-blue-500/20 text-blue-200"
+                          }`}
+                        >
+                          {t.cancha.nombre}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-gray-100">
+                        {t.duracionMinutos} min
+                      </td>
+
+                      {filtro !== "PASADOS" && (
+                        <td className="px-4 py-3">
+                          {t.cancelado ? (
+                            <span className="px-2 py-1 rounded-full text-xs font-bold bg-red-500/20 text-red-200">
+                              CANCELADO
+                            </span>
+                          ) : (
+                            <span className="px-2 py-1 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-200">
+                              ACTIVO
+                            </span>
+                          )}
+                        </td>
+                      )}
+
+                      {filtro !== "PASADOS" && (
+                        <td className="px-4 py-3 text-right">
+                          {!t.cancelado && (
+                            <button
+                              onClick={() => handleEliminarClick(t.id)}
+                              className="text-red-300 hover:text-red-100 text-xs sm:text-sm font-bold px-3 py-1 rounded-lg hover:bg-red-500/20 transition"
+                            >
+                              Cancelar
+                            </button>
+                          )}
+                        </td>
+                      )}
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </main>
     </div>
   );
 }
